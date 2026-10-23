@@ -3,6 +3,7 @@ export interface Env {
   CACHE: KVNamespace;
   QUEUE: Queue<TaskJob>;
   ENVIRONMENT: string;
+  LOG_LEVEL: string;
 }
 
 export type TaskStatus = "todo" | "in_progress" | "done" | "blocked";

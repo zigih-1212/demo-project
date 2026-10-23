@@ -30,7 +30,7 @@ API — <https://demo-fullstack-backend.dvybornyh332.workers.dev>
 | Стратегии кэширования | read-through кэш (Redis / KV), инвалидация по записи, TTL 60 с |
 | Оптимизация запросов и производительность | индексы под фильтры, пагинация, агрегаты в БД, кэш, гистограмма латентности |
 | CI/CD | GitHub Actions: typecheck → unit-тесты → lint → сборка образа → CodeQL → deploy со smoke-тестом |
-| Мониторинг и логи (Grafana, Prometheus) | `/metrics` в формате Prometheus, дашборд Grafana, правила алертов SLO |
+| Мониторинг и логи (Grafana, Prometheus) | `/metrics` в формате Prometheus со счётчиками, персистентными в D1 (ADR-008), дашборд Grafana, правила алертов SLO |
 | Docker | multi-stage Dockerfile, non-root, healthcheck, `docker-compose.yml` на 8 сервисов |
 | Kubernetes | Deployment (probes, resources, securityContext), Service, HPA, PDB, Ingress, отдельный worker |
 | Celery / Airflow | Celery worker + Beat (расписание: переиндексация, выгрузка, ежечасный аудит) |

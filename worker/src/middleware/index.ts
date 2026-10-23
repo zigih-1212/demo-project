@@ -2,6 +2,7 @@ import type { ErrorHandler, MiddlewareHandler } from "hono";
 import { AppError, RateLimitError } from "../lib/errors";
 import { log } from "../lib/logger";
 import { increment, observe } from "../lib/metrics";
+import { flushMetrics } from "../lib/metricsStore";
 
 export const requestId: MiddlewareHandler = async (c, next) => {
   const id = c.req.header("x-request-id") ?? crypto.randomUUID();
@@ -71,4 +72,19 @@ export const rateLimit: MiddlewareHandler = async (c, next) => {
 
   await c.env.CACHE.put(key, String(count + 1), { expirationTtl: WINDOW_SECONDS });
   await next();
+};
+/**
+ * Сбрасывает счётчики в D1 после ответа.
+ *
+ * Крон-триггер здесь не годится: он выполняется в отдельном изоляте и
+ * не видит счётчики, накопленные при обработке запросов. Поэтому сброс
+ * делает тот же изолят, что и запрос, и делает это в фоне через
+ * waitUntil — ответ клиенту не ждёт записи.
+ */
+export const metricsFlush: MiddlewareHandler = async (c, next) => {
+  await next();
+  const ctx = c.executionCtx;
+  if (ctx) {
+    ctx.waitUntil(flushMetrics(c.env.DB));
+  }
 };

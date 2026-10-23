@@ -11,9 +11,22 @@ export interface LogContext {
 
 const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
+let minLevel: number = LEVELS.info;
+
+/**
+ * Уровень логирования задаётся из переменных окружения воркера.
+ *
+ * В Workers нет глобального process.env, поэтому уровень хранится
+ * в модуле и выставляется при старте.
+ */
+export function configureLogger(level: string | undefined): void {
+  if (!level) return;
+  const resolved = LEVELS[level as LogLevel];
+  if (resolved !== undefined) minLevel = resolved;
+}
+
 function shouldLog(level: LogLevel): boolean {
-  const min = (LEVELS[process.env.LOG_LEVEL as LogLevel] ?? 20) as number;
-  return LEVELS[level] >= min;
+  return LEVELS[level] >= minLevel;
 }
 
 export function log(level: LogLevel, message: string, context: LogContext = {}): void {
