@@ -1,0 +1,27 @@
+name = "demo-fullstack-backend"
+main = "src/index.ts"
+compatibility_date = "2026-10-23"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "demo-fullstack-db"
+database_id = "eccce4dd-6cce-460b-bcb9-250604700444"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "fe73ca6ba10c43999ef6290c6bc679dc"
+
+[[queues.producers]]
+binding = "QUEUE"
+queue = "demo-fullstack-queue"
+
+[[queues.consumers]]
+queue = "demo-fullstack-queue"
+
+[vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "info"
