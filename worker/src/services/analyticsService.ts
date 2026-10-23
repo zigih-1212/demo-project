@@ -21,7 +21,7 @@ export class AnalyticsService {
   ) {}
 
   async summary(days = 14): Promise<DashboardSummary> {
-    const cached = await this.cache.get<DashboardSummary>("tasks:stats", "summary");
+    const cached = await this.cache.getVersioned<DashboardSummary>("tasks:stats", "summary");
     if (cached) return cached;
 
     const [total, byStatus, byPriority, createdPerDay, topAssignees] = await Promise.all([
@@ -43,7 +43,7 @@ export class AnalyticsService {
       generatedAt: new Date().toISOString(),
     };
 
-    await this.cache.set("tasks:stats", "summary", summary, { ttlSeconds: STATS_TTL, prefix: "tasks:stats" });
+    await this.cache.setVersioned("tasks:stats", "summary", summary, { ttlSeconds: STATS_TTL, prefix: "tasks:stats" });
     return summary;
   }
 }

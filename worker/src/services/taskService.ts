@@ -16,7 +16,7 @@ export class TaskService {
 
   async list(query: ListTasksQuery): Promise<Paginated<Task>> {
     const cacheKey = JSON.stringify(query);
-    const cached = await this.cache.get<Paginated<Task>>("tasks:list", hashKey(cacheKey));
+    const cached = await this.cache.getVersioned<Paginated<Task>>("tasks:list", hashKey(cacheKey));
     if (cached) {
       increment("cache_hits_total", { namespace: "tasks:list" });
       return cached;
@@ -27,7 +27,7 @@ export class TaskService {
     const result = await this.repository.list(query);
     observe("repository_query_duration_seconds", (Date.now() - started) / 1000, { operation: "list" });
 
-    await this.cache.set("tasks:list", hashKey(cacheKey), result, { ttlSeconds: LIST_CACHE_TTL, prefix: "tasks:list" });
+    await this.cache.setVersioned("tasks:list", hashKey(cacheKey), result, { ttlSeconds: LIST_CACHE_TTL, prefix: "tasks:list" });
     return result;
   }
 
@@ -84,8 +84,8 @@ export class TaskService {
   }
 
   private async invalidateLists(): Promise<void> {
-    await this.cache.invalidatePattern("tasks:list");
-    await this.cache.invalidatePattern("tasks:stats");
+    await this.cache.invalidateNamespace("tasks:list");
+    await this.cache.invalidateNamespace("tasks:stats");
   }
 }
 
