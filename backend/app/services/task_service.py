@@ -23,20 +23,38 @@ class TaskService:
         self.session = session
         self.redis = redis
 
+    async def _cache_get(self, key: str):
+        if self.redis is None:
+            return None
+        return await self.redis.get(key)
+
+    async def _cache_set(self, key: str, value: str, ttl: int) -> None:
+        if self.redis is None:
+            return
+        await self.redis.setex(key, ttl, value)
+
+    async def _cache_invalidate_pattern(self, pattern: str) -> None:
+        if self.redis is None:
+            return
+        keys = [key async for key in self.redis.scan_iter(match=pattern)]
+        if keys:
+            await self.redis.delete(*keys)
+
     async def list_tasks(
         self,
         *,
         status: str | None = None,
         priority: str | None = None,
+        assignee: str | None = None,
         search: str | None = None,
         sort: str = "created_at",
         order: str = "desc",
         page: int = 1,
         page_size: int = 20,
     ) -> dict:
-        cache_key = f"tasks:list:{status}:{priority}:{search}:{sort}:{order}:{page}:{page_size}"
+        cache_key = f"tasks:list:{status}:{priority}:{assignee}:{search}:{sort}:{order}:{page}:{page_size}"
 
-        cached = await self.redis.get(cache_key)
+        cached = await self._cache_get(cache_key)
         if cached:
             payload = json.loads(cached)
             payload["cached"] = True
@@ -47,15 +65,15 @@ class TaskService:
             conditions.append(Task.status == status)
         if priority:
             conditions.append(Task.priority == priority)
+        if assignee:
+            conditions.append(Task.assignee == assignee)
         if search:
             pattern = f"%{search}%"
             conditions.append(Task.title.ilike(pattern))
 
         total_stmt = select(func.count()).select_from(Task)
-        count_stmt = select(func.count()).select_from(Task)
         for condition in conditions:
             total_stmt = total_stmt.where(condition)
-            count_stmt = count_stmt.where(condition)
 
         total = (await self.session.execute(total_stmt)).scalar_one()
 
@@ -82,8 +100,8 @@ class TaskService:
             "pages": max(1, -(-total // page_size)),
             "cached": False,
         }
-        await self.redis.setex(
-            cache_key, settings.cache_ttl_seconds, json.dumps(payload, default=str)
+        await self._cache_set(
+            cache_key, json.dumps(payload, default=str), settings.cache_ttl_seconds
         )
         return payload
 
@@ -97,6 +115,8 @@ class TaskService:
             description=payload.get("description", ""),
             priority=payload.get("priority", "medium"),
             assignee=payload.get("assignee", "unassigned"),
+            created_by=payload.get("created_by"),
+            due_date=payload.get("due_date"),
         )
         self.session.add(task)
         await self.session.commit()
@@ -108,7 +128,14 @@ class TaskService:
         task = await self.get_task(task_id)
         if task is None:
             return None
-        for field in ("title", "description", "status", "priority", "assignee"):
+        for field in (
+            "title",
+            "description",
+            "status",
+            "priority",
+            "assignee",
+            "due_date",
+        ):
             if field in payload:
                 setattr(task, field, payload[field])
         await self.session.commit()
@@ -128,13 +155,11 @@ class TaskService:
     async def summary(self, days: int = 14) -> dict:
         since = datetime.now(timezone.utc) - timedelta(days=days)
 
-        by_status = (
-            select(Task.status, func.count().label("count"))
-            .group_by(Task.status)
+        by_status = select(Task.status, func.count().label("count")).group_by(
+            Task.status
         )
-        by_priority = (
-            select(Task.priority, func.count().label("count"))
-            .group_by(Task.priority)
+        by_priority = select(Task.priority, func.count().label("count")).group_by(
+            Task.priority
         )
         per_day = (
             select(
@@ -146,28 +171,39 @@ class TaskService:
             .order_by("date")
         )
         total = select(func.count()).select_from(Task)
+        overdue = (
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.due_date.is_not(None),
+                Task.due_date < datetime.now(timezone.utc),
+                Task.status != "done",
+            )
+        )
 
         status_rows = (await self.session.execute(by_status)).all()
         priority_rows = (await self.session.execute(by_priority)).all()
         day_rows = (await self.session.execute(per_day)).all()
         total_count = (await self.session.execute(total)).scalar_one()
+        overdue_count = (await self.session.execute(overdue)).scalar_one()
 
         done = dict(status_rows).get("done", 0)
         return {
             "total": total_count,
             "by_status": dict(status_rows),
             "by_priority": dict(priority_rows),
+            "overdue_count": overdue_count,
+            "completion_rate": round(done / total_count * 100, 1)
+            if total_count
+            else 0.0,
             "created_per_day": [
                 {"date": row.date.date().isoformat(), "count": row.count}
                 for row in day_rows
             ],
-            "completion_rate": round(done / total_count * 100, 1) if total_count else 0.0,
         }
 
     async def _invalidate(self) -> None:
-        keys = [key async for key in self.redis.scan_iter(match="tasks:list:*")]
-        if keys:
-            await self.redis.delete(*keys)
+        await self._cache_invalidate_pattern("tasks:list:*")
 
     @staticmethod
     def _serialize(task: Task) -> dict:
@@ -178,6 +214,8 @@ class TaskService:
             "status": task.status,
             "priority": task.priority,
             "assignee": task.assignee,
+            "created_by": str(task.created_by) if task.created_by else None,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
             "created_at": task.created_at.isoformat() if task.created_at else None,
             "updated_at": task.updated_at.isoformat() if task.updated_at else None,
         }

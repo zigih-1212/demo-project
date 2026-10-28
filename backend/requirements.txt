@@ -12,4 +12,7 @@ structlog==24.4.0
 httpx==0.28.0
 pytest==8.3.4
 pytest-asyncio==0.25.0
+anyio==4.7.0
 ruff==0.8.4
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4

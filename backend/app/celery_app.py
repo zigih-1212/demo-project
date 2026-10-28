@@ -13,6 +13,7 @@ celery_app = Celery(
     "demo_fullstack",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
+    include=["app.tasks"],
 )
 
 celery_app.conf.update(
@@ -25,7 +26,9 @@ celery_app.conf.update(
     task_time_limit=300,
     task_soft_time_limit=240,
     worker_max_tasks_per_child=1000,
-    broker_connection_retry_on_startup=True,
+    broker_connection_retry_on_startup=False,
+    broker_connection_retry=False,
+    broker_connection_timeout=2,
     beat_schedule={
         "hourly-audit": {
             "task": "app.tasks.run_audit",

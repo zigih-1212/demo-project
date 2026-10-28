@@ -14,9 +14,10 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.celery_app import celery_app
 from app.core.config import get_settings
 from app.db.session import engine, get_session
+from app.services.activity_service import ActivityService
+from app.services.auth_service import AuthService
 from app.services.task_service import TaskService
 
 logging.basicConfig(level=logging.INFO)
@@ -87,6 +88,16 @@ def get_service(session: AsyncSession = Depends(get_session)) -> TaskService:
     return TaskService(session, redis_client)
 
 
+def get_auth_service(session: AsyncSession = Depends(get_session)) -> AuthService:
+    return AuthService(session, redis_client, settings.jwt_secret_key)
+
+
+def get_activity_service(
+    session: AsyncSession = Depends(get_session),
+) -> ActivityService:
+    return ActivityService(session, redis_client)
+
+
 @app.get("/health")
 async def health(session: AsyncSession = Depends(get_session)) -> dict:
     await session.execute(text("SELECT 1"))
@@ -106,11 +117,60 @@ async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+# ===== AUTH =====
+
+
+@app.post("/api/v1/auth/register")
+async def register(
+    payload: dict,
+    service: AuthService = Depends(get_auth_service),
+) -> dict:
+    email = str(payload.get("email", "")).strip().lower()
+    password = str(payload.get("password", ""))
+    name = str(payload.get("name", "")).strip() or email
+    role = str(payload.get("role", "member"))
+    team = str(payload.get("team", "platform"))
+    return await service.register(email, password, name, role, team)
+
+
+@app.post("/api/v1/auth/login")
+async def login(
+    payload: dict,
+    service: AuthService = Depends(get_auth_service),
+) -> dict:
+    email = str(payload.get("email", "")).strip().lower()
+    password = str(payload.get("password", ""))
+    return await service.login(email, password)
+
+
+@app.get("/api/v1/auth/me")
+async def me(
+    service: AuthService = Depends(get_auth_service),
+    request: Request = None,
+) -> dict:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing token")
+    token = auth_header.split(" ", 1)[1]
+    return await service.get_current_user(token)
+
+
+@app.get("/api/v1/auth/users")
+async def list_users(
+    service: AuthService = Depends(get_auth_service),
+) -> dict:
+    return await service.list_users()
+
+
+# ===== TASKS =====
+
+
 @app.get("/api/v1/tasks")
 async def list_tasks(
     service: TaskService = Depends(get_service),
     status: str | None = Query(default=None),
     priority: str | None = Query(default=None),
+    assignee: str | None = Query(default=None),
     search: str | None = Query(default=None),
     sort: str = Query(default="created_at"),
     order: str = Query(default="desc"),
@@ -122,6 +182,7 @@ async def list_tasks(
     return await service.list_tasks(
         status=status,
         priority=priority,
+        assignee=assignee,
         search=search,
         sort=sort,
         order=order,
@@ -131,34 +192,59 @@ async def list_tasks(
 
 
 @app.post("/api/v1/tasks", status_code=201)
-async def create_task(payload: dict, service: TaskService = Depends(get_service)) -> dict:
+async def create_task(
+    payload: dict,
+    service: TaskService = Depends(get_service),
+    activity: ActivityService = Depends(get_activity_service),
+) -> dict:
     title = str(payload.get("title", "")).strip()
     if len(title) < 3:
-        raise HTTPException(status_code=400, detail="title must be at least 3 characters")
+        raise HTTPException(
+            status_code=400, detail="title must be at least 3 characters"
+        )
+    created_by = payload.get("created_by")
     task = await service.create_task(
         {
             "title": title,
             "description": payload.get("description", ""),
             "priority": payload.get("priority", "medium"),
             "assignee": payload.get("assignee", "unassigned"),
+            "created_by": created_by,
+            "due_date": payload.get("due_date"),
         }
     )
-    celery_app.send_task("app.tasks.reindex_task", args=[str(task.id)])
+    await activity.record(
+        task_id=task.id,
+        action="create",
+        summary=f"Создана задача «{task.title}»",
+    )
+    # Celery reindex is fire-and-forget; enabled when Redis worker is running
     return service._serialize(task)
 
 
 @app.patch("/api/v1/tasks/{task_id}")
 async def update_task(
-    task_id: uuid.UUID, payload: dict, service: TaskService = Depends(get_service)
+    task_id: uuid.UUID,
+    payload: dict,
+    service: TaskService = Depends(get_service),
+    activity: ActivityService = Depends(get_activity_service),
 ) -> dict:
     task = await service.update_task(task_id, payload)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
+    await activity.record(
+        task_id=task.id,
+        action="update",
+        summary=f"Обновлена задача «{task.title}»",
+    )
     return service._serialize(task)
 
 
 @app.delete("/api/v1/tasks/{task_id}")
-async def delete_task(task_id: uuid.UUID, service: TaskService = Depends(get_service)) -> dict:
+async def delete_task(
+    task_id: uuid.UUID,
+    service: TaskService = Depends(get_service),
+) -> dict:
     if not await service.delete_task(task_id):
         raise HTTPException(status_code=404, detail="task not found")
     return {"ok": True}
@@ -169,10 +255,23 @@ async def summary(service: TaskService = Depends(get_service)) -> dict:
     return await service.summary()
 
 
+# ===== ACTIVITY =====
+
+
+@app.get("/api/v1/activity")
+async def activity_list(
+    service: ActivityService = Depends(get_activity_service),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    return await service.recent(limit=limit)
+
+
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("unhandled error", extra={"path": request.url.path})
     return JSONResponse(
         status_code=500,
-        content={"error": {"code": "internal_error", "message": "Internal server error"}},
+        content={
+            "error": {"code": "internal_error", "message": "Internal server error"}
+        },
     )
