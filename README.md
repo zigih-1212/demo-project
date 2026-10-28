@@ -1,4 +1,4 @@
-# TaskBoard — демо-проект уровня Middle
+# TaskBoard — демо-проект
 
 Демо-проект к вакансии **Fullstack Developer (Middle)** в ASTON.
 
