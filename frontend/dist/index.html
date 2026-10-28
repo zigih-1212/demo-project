@@ -1,175 +1,20 @@
 <!DOCTYPE html>
 <html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TaskBoard — Fullstack Demo</title>
-  <meta name="description" content="Демо-проект уровня Middle: Cloudflare Workers + D1 + KV + Queues">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="assets/styles.css">
-</head>
-<body class="bg-slate-50 text-slate-800 antialiased">
-
-<header class="bg-white border-b border-slate-200 sticky top-0 z-20">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-    <div class="flex items-center gap-3">
-      <div class="w-9 h-9 rounded-lg bg-blue-600 text-white grid place-items-center font-bold">T</div>
-      <div>
-        <div class="font-semibold leading-tight">TaskBoard</div>
-        <div class="text-xs text-slate-500 leading-tight">Fullstack Middle Demo · ASTON</div>
-      </div>
-    </div>
-    <div class="flex items-center gap-2 text-xs">
-      <span id="api-status" class="status-pill status-loading">проверка API…</span>
-      <span class="hidden sm:inline text-slate-400">Workers · D1 · KV · Queues</span>
-    </div>
-  </div>
-</header>
-
-<main class="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
-
-  <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-    <div class="card">
-      <div class="text-xs uppercase tracking-wider text-slate-500">Всего задач</div>
-      <div class="text-3xl font-bold mt-1" id="kpi-total">—</div>
-    </div>
-    <div class="card">
-      <div class="text-xs uppercase tracking-wider text-slate-500">В работе</div>
-      <div class="text-3xl font-bold mt-1 text-blue-600" id="kpi-progress">—</div>
-    </div>
-    <div class="card">
-      <div class="text-xs uppercase tracking-wider text-slate-500">Готово</div>
-      <div class="text-3xl font-bold mt-1 text-emerald-600" id="kpi-done">—</div>
-    </div>
-    <div class="card">
-      <div class="text-xs uppercase tracking-wider text-slate-500">Готовность</div>
-      <div class="text-3xl font-bold mt-1 text-violet-600" id="kpi-rate">—</div>
-    </div>
-  </section>
-
-  <section class="grid lg:grid-cols-3 gap-6">
-    <div class="card lg:col-span-2">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="font-semibold">Динамика постановки задач</h2>
-        <span class="text-xs text-slate-400">14 дней</span>
-      </div>
-      <div id="chart" class="chart"></div>
-    </div>
-
-    <div class="card">
-      <h2 class="font-semibold mb-4">Задачи по приоритету</h2>
-      <div id="priority-bars" class="space-y-3"></div>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="flex flex-col lg:flex-row lg:items-center gap-3 justify-between mb-5">
-      <h2 class="font-semibold">Задачи</h2>
-      <form id="create-form" class="flex flex-col sm:flex-row gap-2 flex-1 lg:max-w-3xl">
-        <input id="new-title" type="text" placeholder="Название задачи" class="input flex-1" required>
-        <select id="new-priority" class="input">
-          <option value="low">low</option>
-          <option value="medium" selected>medium</option>
-          <option value="high">high</option>
-          <option value="critical">critical</option>
-        </select>
-        <input id="new-assignee" type="text" placeholder="исполнитель" class="input sm:w-40">
-        <button type="submit" class="btn-primary">Создать</button>
-      </form>
-    </div>
-
-    <div class="flex flex-col lg:flex-row gap-2 lg:items-center mb-4">
-      <input id="filter-search" type="search" placeholder="Поиск по названию…" class="input lg:w-72">
-      <select id="filter-status" class="input lg:w-44">
-        <option value="">все статусы</option>
-        <option value="todo">todo</option>
-        <option value="in_progress">in_progress</option>
-        <option value="done">done</option>
-        <option value="blocked">blocked</option>
-      </select>
-      <select id="filter-priority" class="input lg:w-44">
-        <option value="">все приоритеты</option>
-        <option value="low">low</option>
-        <option value="medium">medium</option>
-        <option value="high">high</option>
-        <option value="critical">critical</option>
-      </select>
-      <select id="sort-by" class="input lg:w-48">
-        <option value="created_at">по дате</option>
-        <option value="priority">по приоритету</option>
-        <option value="title">по названию</option>
-      </select>
-      <select id="sort-order" class="input lg:w-36">
-        <option value="desc">desc</option>
-        <option value="asc">asc</option>
-      </select>
-      <button id="refresh" class="btn-ghost">Обновить</button>
-    </div>
-
-    <div id="table-wrap" class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="text-left text-xs uppercase tracking-wider text-slate-500 border-b border-slate-200">
-            <th class="py-2 pr-3">Название</th>
-            <th class="py-2 pr-3">Статус</th>
-            <th class="py-2 pr-3">Приоритет</th>
-            <th class="py-2 pr-3 hidden md:table-cell">Исполнитель</th>
-            <th class="py-2 pr-3 hidden lg:table-cell">Создана</th>
-            <th class="py-2 pr-3 text-right">Действия</th>
-          </tr>
-        </thead>
-        <tbody id="task-rows"></tbody>
-      </table>
-    </div>
-
-    <div id="empty" class="hidden text-center py-12 text-slate-500">Задач по текущему фильтру нет</div>
-    <div id="error" class="hidden rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 mb-4"></div>
-
-    <div class="flex items-center justify-between mt-5 text-sm">
-      <span id="page-info" class="text-slate-500"></span>
-      <div class="flex gap-2">
-        <button id="prev" class="btn-ghost">← Назад</button>
-        <button id="next" class="btn-ghost">Вперёд →</button>
-      </div>
-    </div>
-  </section>
-
-  <section class="grid lg:grid-cols-2 gap-6">
-    <div class="card">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="font-semibold">Аудит ИИ-агента</h2>
-        <button id="run-audit" class="btn-ghost">Запустить</button>
-      </div>
-      <div id="audit-body" class="text-sm text-slate-500">Аудит не запускался</div>
-    </div>
-
-    <div class="card">
-      <h2 class="font-semibold mb-4">Метрики Prometheus</h2>
-      <pre id="metrics" class="metrics-box">загрузка…</pre>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2 class="font-semibold mb-4">Стек и архитектура</h2>
-    <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
-      <div><div class="font-medium">Backend</div><div class="text-slate-500">TypeScript, Hono, Cloudflare Workers</div></div>
-      <div><div class="font-medium">Данные</div><div class="text-slate-500">D1 (SQLite), индексы, миграции</div></div>
-      <div><div class="font-medium">Кэш и очереди</div><div class="text-slate-500">KV (TTL) + Cloudflare Queues</div></div>
-      <div><div class="font-medium">Наблюдаемость</div><div class="text-slate-500">Prometheus-метрики, JSON-логи, trace id</div></div>
-    </div>
-  </section>
-
-</main>
-
-<footer class="border-t border-slate-200 bg-white">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1 justify-between">
-    <span>Демо-проект к вакансии Fullstack Developer (Middle) — ASTON</span>
-    <span>API: <span id="api-url" class="font-mono"></span></span>
-  </div>
-</footer>
-
-<script src="assets/app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pulse Console — Task Management</title>
+    <meta name="description" content="Демо fullstack-проекта уровня Middle: React + TypeScript + Cloudflare Workers + D1 + KV + Queues" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script type="module" crossorigin src="./assets/index-DuLFSLCW.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-7oQ1t45N.css">
+  </head>
+  <body class="bg-[#f8fafc] text-slate-900 font-sans antialiased">
+    <div id="root"></div>
+  </body>
 </html>

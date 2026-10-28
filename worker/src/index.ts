@@ -4,7 +4,10 @@ import { errorHandler, httpLogger, metricsFlush, rateLimit, requestId } from "./
 import { renderPrometheus, setGauge } from "./lib/metrics";
 import { readPersistedMetrics } from "./lib/metricsStore";
 import { configureLogger, log } from "./lib/logger";
+import { optionalAuth, requireAuth } from "./middleware/auth";
 import { taskRoutes } from "./routes/tasks";
+import { authRoutes } from "./routes/auth";
+import { activityRoutes } from "./routes/activity";
 import { analyticsRoutes } from "./routes/analytics";
 import type { Env, TaskJob } from "./types";
 
@@ -15,6 +18,7 @@ app.use("*", cors({ origin: "*", allowHeaders: ["Content-Type", "X-Request-Id"],
 app.use("/api/*", rateLimit);
 app.use("*", httpLogger);
 app.use("*", metricsFlush);
+app.use("*", optionalAuth);
 app.onError(errorHandler);
 
 app.get("/", (c) =>
@@ -48,6 +52,10 @@ app.get("/metrics", async (c) => {
     "Content-Type": "text/plain; version=0.0.4; charset=utf-8",
   });
 });
+
+app.route("/api/v1/auth", authRoutes());
+
+app.route("/api/v1/activity", activityRoutes());
 
 app.route("/api/v1/tasks", taskRoutes());
 app.route("/api/v1/analytics", analyticsRoutes());

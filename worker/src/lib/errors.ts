@@ -22,6 +22,24 @@ export class ValidationError extends AppError {
   }
 }
 
+export class UnauthorizedError extends AppError {
+  constructor(message = "Authentication required") {
+    super(401, "unauthorized", message);
+  }
+}
+
+export class ForbiddenError extends AppError {
+  constructor(message = "Insufficient permissions") {
+    super(403, "forbidden", message);
+  }
+}
+
+export class ConflictError extends AppError {
+  constructor(message: string) {
+    super(409, "conflict", message);
+  }
+}
+
 export class RateLimitError extends AppError {
   constructor(retryAfter: number) {
     super(429, "rate_limited", "Too many requests", { retryAfter });

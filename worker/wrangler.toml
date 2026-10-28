@@ -25,3 +25,4 @@ queue = "demo-fullstack-queue"
 [vars]
 ENVIRONMENT = "production"
 LOG_LEVEL = "info"
+JWT_SECRET = "demo-fullstack-secret-key-do-not-use-in-prod-change-via-env"
