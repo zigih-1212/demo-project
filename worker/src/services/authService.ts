@@ -44,7 +44,12 @@ export class AuthService {
     const valid = await verifyPassword(password, found.passwordHash);
     if (!valid) throw new UnauthorizedError("Неверный email или пароль");
 
-    const { token, expiresAt } = await signToken(found.user, this.secret);
+    const { token, expiresAt } = await this.issueToken(found.user);
     return { token, expiresAt, user: found.user };
+  }
+
+  /** Выпуск токена для заданного пользователя (регистрация, выдача доступа). */
+  async issueToken(user: User): Promise<{ token: string; expiresAt: string }> {
+    return signToken(user, this.secret);
   }
 }

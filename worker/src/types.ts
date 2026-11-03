@@ -9,6 +9,7 @@ export interface Env {
   ENVIRONMENT: string;
   LOG_LEVEL: string;
   JWT_SECRET: string;
+  FRONTEND_ORIGIN: string;
 }
 
 export interface Task {

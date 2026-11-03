@@ -62,7 +62,7 @@ function parseDueDate(raw: unknown): string | null {
 }
 
 export function parseCreateTask(body: unknown): CreateTaskPayload {
-  if (typeof body !== "object" || body === null) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new ValidationError("Тело запроса должно быть объектом");
   }
   const record = body as Record<string, unknown>;
@@ -95,7 +95,7 @@ export function parseCreateTask(body: unknown): CreateTaskPayload {
 export type UpdateTaskPayload = Partial<CreateTaskPayload> & { status?: TaskStatus };
 
 export function parseUpdateTask(body: unknown): UpdateTaskPayload {
-  if (typeof body !== "object" || body === null) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new ValidationError("Тело запроса должно быть объектом");
   }
   const record = body as Record<string, unknown>;

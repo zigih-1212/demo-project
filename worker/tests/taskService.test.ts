@@ -12,11 +12,15 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     status: "todo",
     priority: "medium",
     assignee: "dmitry",
+    createdBy: null,
+    dueDate: null,
     createdAt: "2026-10-01T00:00:00.000Z",
     updatedAt: "2026-10-01T00:00:00.000Z",
     ...overrides,
   };
 }
+
+const ACTOR = { id: "u-test", email: "test@pulse.dev", name: "Тест", role: "member" as const, team: "platform" };
 
 function buildService(task: Task | null) {
   const repository = {
@@ -45,7 +49,15 @@ function buildService(task: Task | null) {
   } as unknown as KVNamespace;
   const cache = new CacheService(kv);
   const queue = { send: vi.fn().mockResolvedValue(undefined) } as unknown as Queue;
-  return { service: new TaskService(repository as never, cache, queue), repository, queue, store };
+  const activity = { record: vi.fn().mockResolvedValue(undefined) };
+  const sync = { bumpVersion: vi.fn().mockResolvedValue(1), getVersion: vi.fn().mockResolvedValue(1) };
+  return {
+    service: new TaskService(repository as never, cache, queue, activity as never, sync as never),
+    repository,
+    queue,
+    store,
+    sync,
+  };
 }
 
 describe("TaskService", () => {
@@ -59,13 +71,13 @@ describe("TaskService", () => {
   it("инвалидирует кэш списка после создания задачи", async () => {
     const { service, repository } = buildService(makeTask());
     await service.list({ sort: "created_at", order: "desc", page: 1, pageSize: 20 });
-    await service.create({ title: "Новая", description: "", priority: "low", assignee: "qa" });
+    await service.create({ title: "Новая", description: "", priority: "low", assignee: "qa", dueDate: null }, ACTOR);
     expect(repository.create).toHaveBeenCalled();
   });
 
   it("ставит задачу в очередь после создания", async () => {
     const { service, queue } = buildService(makeTask());
-    await service.create({ title: "Новая", description: "", priority: "low", assignee: "qa" });
+    await service.create({ title: "Новая", description: "", priority: "low", assignee: "qa", dueDate: null }, ACTOR);
     expect(queue.send).toHaveBeenCalledWith(
       expect.objectContaining({ type: "task.reindex" }),
     );
@@ -74,5 +86,11 @@ describe("TaskService", () => {
   it("выбрасывает NotFoundError для несуществующей задачи", async () => {
     const { service } = buildService(null);
     await expect(service.get("missing")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("инкрементирует версию синхронизации при мутации", async () => {
+    const { service, sync } = buildService(makeTask());
+    await service.create({ title: "Новая", description: "", priority: "low", assignee: "qa", dueDate: null }, ACTOR);
+    expect(sync.bumpVersion).toHaveBeenCalledWith("tasks_version");
   });
 });

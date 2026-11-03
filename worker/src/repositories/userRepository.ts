@@ -23,6 +23,15 @@ function toUser(row: UserRow): User {
 
 const COLUMNS = "id, email, name, password_hash, role, team, created_at";
 
+export interface CreateUserInput {
+  id: string;
+  email: string;
+  name: string;
+  passwordHash: string;
+  role: "admin" | "member";
+  team: string;
+}
+
 export class UserRepository {
   constructor(private readonly db: D1Database) {}
 
@@ -33,6 +42,21 @@ export class UserRepository {
       .first<UserRow>();
     if (!row) return null;
     return { user: toUser(row), passwordHash: row.password_hash };
+  }
+
+  async create(input: CreateUserInput): Promise<User> {
+    await this.db
+      .prepare("INSERT INTO users (id, email, name, password_hash, role, team) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(input.id, input.email, input.name, input.passwordHash, input.role, input.team)
+      .run();
+    return {
+      id: input.id,
+      email: input.email,
+      name: input.name,
+      role: input.role,
+      team: input.team,
+      createdAt: new Date().toISOString(),
+    };
   }
 
   async findById(id: string): Promise<User | null> {

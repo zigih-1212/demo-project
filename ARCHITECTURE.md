@@ -32,7 +32,7 @@
 | Метрики | prometheus-client → Prometheus → Grafana | свой exposition-формат → Prometheus/Grafana |
 | K8s | Deployment/Service/HPA/PDB/Ingress | не применимо (edge) |
 | CI/CD | GitHub Actions: lint → tests → image → deploy | GitHub Actions: typecheck → tests → deploy |
-| Тесты | pytest + asyncio + httpx (4 теста) | vitest + React Testing Library (16 тестов) |
+| Тесты | pytest + asyncio + httpx (4 теста) | vitest: 24 unit + 24 integration (Miniflare D1+KV) + 9 frontend (RTL) |
 
 Логика сервисного слоя, схема данных, контракты API и формат метрик — одинаковые.
 Различается только транспорт и хранилище, что и позволяет держать один API-контракт
@@ -167,12 +167,19 @@ multiprocessing-регистр; в Workers это лишний вес. Форм�
 ### ADR-009. Frontend — React + TypeScript + Vite на Cloudflare Pages
 
 Фронтенд — SPA на React 18 + TypeScript, собран через Vite. Страницы:
-дашборд с KPI, задачи с фильтрами/пагинацией, лента активности, аудит ИИ,
-пользователи, страница входа. 16 unit-тестов (React Testing Library + Vitest).
+дашборд с KPI и SVG-графиком создания/выполнения задач, задачи с фильтрами,
+поиском, пагинацией и live-синхронизацией (SSE + ETag/304, ADR-014), лента
+активности, аудит ИИ, пользователи, вход/регистрация. 9 unit-тестов (React
+Testing Library + Vitest); воркер покрыт 24 unit + 24 integration-тестами
+(Miniflare: D1 + KV in-memory).
 
 **Причины React.** Компонентный подход, простое управление состоянием, легкость
 тестирования. Для démo не требуется Next.js — suffisamment статического хостинга
 на Pages.
+
+**Регистрация — toggle на экране входа, а не отдельный маршрут.** Pages отдаёт
+статику без SPA-rewrites: хэш-роутинг `/login` привёл бы к 404 при прямом заходе
+и обновлении. Один экран с переключателем режима — дешевле и надёжнее.
 
 ### ADR-010. Персистентность метрик на Workers: сброс дельт из того же изолята
 
@@ -197,6 +204,91 @@ Analytics Engine — оба варианта описаны как вариан�
 попаданий в кэш — то есть данные, на которых строятся SLO-алерты из
 `infra/prometheus/rules/slo.yml`.
 
+### ADR-011. Секреты — только через `wrangler secret`
+
+**Контекст.** Первоначально `JWT_SECRET` лежал plaintext в `wrangler.toml`
+(`[vars]`) и попал в git. Любой, кто видел репозиторий, мог подписывать токены.
+
+**Решение.** Секрет вынесен из `[vars]` и установлен через
+`wrangler secret put JWT_SECRET` — Cloudflare хранит его зашифрованным, не
+показывает в dashboard/API в plaintext, не попадает в деплоймент-бандл. В
+`[vars]` осталось только несекретное: `ENVIRONMENT`, `LOG_LEVEL`,
+`FRONTEND_ORIGIN` (ADR-012).
+
+**Ротация.** Повторный `secret put` инвалидирует все выданные токены —
+демо-аккаунты просто перелогиниваются. В CI деплой должен уметь `secret put`
+(токен Cloudflare с правами Workers Secrets).
+
+### ADR-012. CORS — явный allowlist вместо `origin: *`
+
+**Контекст.** `origin: "*"` на stateful API (JWT-сессии, записи в БД) позволял
+любому сайту читать ответы авторизованных запросов из браузера жертвы.
+
+**Решение.** Ручной middleware (`worker/src/middleware/index.ts`): только
+origin'ы из `FRONTEND_ORIGIN` (comma-separated) получают
+`Access-Control-Allow-Origin` + `Vary: Origin`. Preflight отвечается 204 с
+заголовками. Запросы без `Origin` (server-to-server) пропускаются без ACAO.
+
+**Найденный дефект.** `c.header()` в Hono не применяется к `Response`,
+возвращённому напрямую из обработчика — preflight терял ACAO. Исправлено
+построением `Response` с заголовками в конструкторе; покрыто интеграционным
+тестом (allow/deny origin).
+
+**Компромисс.** Новый origin = переменная + редеплой. Для продакшена с
+динамическими клиентами — Cloudflare Access или конфиг в D1.
+
+### ADR-013. Rate limiting — token bucket в KV, fail-open
+
+**Контекст.** Публичный API с `/login` — цель brute-force и абьюза.
+
+**Решение.** Token bucket в KV (`worker/src/lib/rateLimiter.ts`), классы
+маршрутов: `auth` 10/мин, `write` 60/мин, `read` 120/мин на IP
+(`cf-connecting-ip`). Заголовки `X-RateLimit-Limit/Remaining/Class`, 429 с
+`Retry-After`. Классификация — `classifyRequest()` по методу и пути.
+
+**Компромисс (fail-open).** При деградации KV лимитер пропускает запросы:
+доступность API важнее строгости квоты (см. ADR-015). KV eventually consistent —
+счётчик может дрейфовать при параллельных запросах; для точности — Durable
+Object.
+
+### ADR-014. Синхронизация UI: версия в D1 + ETag/304 + SSE
+
+**Контекст.** Изоляты Workers короткоживущие и независимы: SSE-подключение и
+мутация задачи почти наверняка исполняются в разных изолятах. Единственный
+источник истины — D1 (строгая консистентность в регионе).
+
+**Решение.** Три уровня:
+1. Мутации инкрементируют `sync_state.tasks_version` (D1) в той же транзакции,
+   что и запись задачи.
+2. Клиент слушает публичный SSE `/api/v1/sync/tasks/stream` — стримит **только
+   номер версии** (без данных задач), поэтому не требует авторизации:
+   EventSource не умеет заголовки, а утечка счётчика версий — некритична.
+3. При изменении версии — условный GET `/api/v1/tasks` с `If-None-Match`
+   (ETag = `W/"{version}-{hashQuery}"`): 304 = локальная копия актуальна, ноль
+   трафика и рендера. При обрыве SSE — fallback-опрос `/sync/version` раз в 3 с.
+
+**Компромисс.** SSE-стрим полирует D1 раз в 1.5 с на соединение — осознанный
+выбор для демо-маштаба (десятки зрителей). При росте нагрузки правильный путь —
+Durable Object, держащий подключения и получающий версию из очереди; путь
+миграции описан в `worker/src/routes/sync.ts`.
+
+### ADR-015. Отказоустойчивость: circuit breaker KV + best-effort очередь
+
+**Контекст.** KV и Queues — управляемые сервисы; их деградация не должна
+ломать основной поток (чтение/мутация задач).
+
+**Решение.**
+- Circuit breaker для KV (`worker/src/lib/kvCircuit.ts`): 5 ошибок → open на
+  30 с → half-open probe. Reads → cache miss (промах в D1), writes → no-op.
+  `/health` показывает `cache: "degraded"`; метрики `kv_errors_total`,
+  `kv_circuit_open`. Все операции кэша — через breaker (`lib/cache.ts`).
+- Мутации задач больше не падают при ошибке `queue.send`: enqueue обёрнут в
+  best-effort try/catch (`queue_send_errors_total`), consumer догонит при
+  следующей версии — аудит и переиндексация идемпотентны.
+
+**Компромисс.** При открытом breaker кэш отключён (все чтения — в D1);
+потерянные редкие jobs `audit.run` восполняются ручным запуском.
+
 ## 4. Производительность
 
 - пагинация на стороне БД (`LIMIT/OFFSET`), ограничение `pageSize <= 100`;
@@ -218,7 +310,6 @@ Analytics Engine — оба варианта описаны как вариан�
 ## 6. Что осознанно не сделано
 
 - версионирование API (контракт зафиксирован, но не версионирован);
-- real-time обновления в UI (сделано polling, а не WebSocket/SSE);
 - интеграция с NiFi — в вакансии она упомянута, но в демо нет внешнего
   data-flow, к которому её можно было бы подключить;
 - Airflow — упомянут в вакансии, но для этого демо Celery достаточно;

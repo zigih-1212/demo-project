@@ -25,4 +25,8 @@ queue = "demo-fullstack-queue"
 [vars]
 ENVIRONMENT = "production"
 LOG_LEVEL = "info"
-JWT_SECRET = "demo-fullstack-secret-key-do-not-use-in-prod-change-via-env"
+# Allowed CORS origins for the SPA (comma-separated). Non-secret config.
+FRONTEND_ORIGIN = "https://master.demo-fullstack-frontend.pages.dev,http://localhost:5173"
+# JWT_SECRET is NOT stored here. Secrets live in wrangler.toml as plaintext and
+# leak into git/CI. It is injected via `wrangler secret put JWT_SECRET` and
+# stored encrypted by Cloudflare. See .env.example and ARCHITECTURE.md (ADR-011).

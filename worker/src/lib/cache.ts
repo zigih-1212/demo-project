@@ -1,3 +1,5 @@
+import { KvCircuitBreaker } from "./kvCircuit";
+
 /**
  * Кэш на KV с версионированием по namespace.
  *
@@ -8,6 +10,10 @@
  * Вместо удаления ключей используется счётчик версий namespace: он лежит
  * в одном ключе, обновляется атомарно и мгновенно делает все старые записи
  * недостижимыми. Старые ключи истекают по TTL.
+ *
+ * Все обращения к KV идут через KvCircuitBreaker: при деградации KV
+ * чтение возвращает «промах кэша» (запрос уйдёт в D1), запись — no-op.
+ * API остаётся доступным, метрика kv_errors_total фиксирует сбой.
  */
 export interface CacheOptions {
   ttlSeconds: number;
@@ -18,10 +24,10 @@ const VERSION_PREFIX = "cachever:";
 const VERSION_TTL_SECONDS = 86400;
 
 export class CacheService {
-  constructor(private readonly kv: KVNamespace) {}
+  private readonly kv: KvCircuitBreaker;
 
-  private key(namespace: string, id: string): string {
-    return namespace + ":" + id;
+  constructor(namespace: KVNamespace) {
+    this.kv = new KvCircuitBreaker(namespace);
   }
 
   async get<T>(namespace: string, id: string): Promise<T | null> {
@@ -41,7 +47,11 @@ export class CacheService {
   }
 
   async invalidate(namespace: string, id: string): Promise<void> {
-    await this.kv.delete(this.key(namespace, id));
+    await this.kv.del(this.key(namespace, id));
+  }
+
+  private key(namespace: string, id: string): string {
+    return namespace + ":" + id;
   }
 
   private async version(namespace: string): Promise<string> {

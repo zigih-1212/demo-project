@@ -1,5 +1,3 @@
-export const API_BASE = "https://demo-fullstack-backend.dvybornyh332.workers.dev";
-
 export type TaskStatus = "todo" | "in_progress" | "done" | "blocked";
 export type TaskPriority = "low" | "medium" | "high" | "critical";
 export type UserRole = "admin" | "member";
@@ -53,6 +51,18 @@ export interface LoginResponse {
   token: string;
   expiresAt: string;
   user: AuthUser;
+}
+
+export interface RegisterRequest {
+  email: string;
+  name: string;
+  password: string;
+}
+
+export interface SyncVersionInfo {
+  key: string;
+  version: number;
+  ts: string;
 }
 
 export interface Paginated<T> {

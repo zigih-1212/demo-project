@@ -3,6 +3,49 @@ import { AppError, RateLimitError } from "../lib/errors";
 import { log } from "../lib/logger";
 import { increment, observe } from "../lib/metrics";
 import { flushMetrics } from "../lib/metricsStore";
+import { RateLimiter, classifyRequest } from "../lib/rateLimiter";
+import type { Env } from "../types";
+
+/**
+ * CORS с явным allowlist'ом происхождений.
+ *
+ * `origin: "*"` недопустим, когда API хранит состояние (JWT-сессии,
+ * записи в БД): любой сайт мог бы читать ответы авторизованных запросов
+ * из браузера жертвы. Поэтому только origin'ы из FRONTEND_ORIGIN.
+ *
+ * Реализовано вручную, а не через hono/cors: так видна полная механика
+ * preflight, Vary: Origin и обработка сервер-к-серверу (без Origin).
+ */
+export const corsMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const allowed = (c.env.FRONTEND_ORIGIN ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const origin = c.req.header("origin");
+  const isAllowed = origin !== undefined && allowed.includes(origin);
+
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Request-Id",
+    "Access-Control-Expose-Headers": "X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining",
+  };
+  if (isAllowed) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Vary"] = "Origin";
+  }
+
+  if (c.req.method === "OPTIONS") {
+    // Preflight: Hono не применяет c.header() к Response, возвращённому
+    // напрямую из обработчика — поэтому заголовки ставим в конструктор.
+    headers["Access-Control-Max-Age"] = "600";
+    return new Response(null, { status: 204, headers });
+  }
+
+  for (const [key, value] of Object.entries(headers)) {
+    c.header(key, value);
+  }
+  await next();
+};
 
 export const requestId: MiddlewareHandler = async (c, next) => {
   const id = (c.req.header("x-request-id") as string) ?? crypto.randomUUID();
@@ -53,22 +96,32 @@ export const errorHandler = (err: Error, c: { get: (k: string) => unknown; json:
   );
 };
 
-const WINDOW_SECONDS = 60;
-const MAX_REQUESTS = 120;
-
+/**
+ * Token-bucket rate limiter с классами маршрутов (auth/write/read).
+ *
+ * Заголовки X-RateLimit-* позволяют клиенту видеть остаток квоты,
+ * а 429 отвечает с Retry-After. Лимитер fail-open при деградации KV —
+ * доступность API важнее строгости лимита (см. ADR-013).
+ */
 export const rateLimit: MiddlewareHandler = async (c, next) => {
   const ip = c.req.header("cf-connecting-ip") ?? "unknown";
-  const key = "rl:" + ip;
-  const raw = await c.env.CACHE.get(key);
-  const count = raw ? Number.parseInt(raw, 10) : 0;
+  const cls = classifyRequest(c.req.method, c.req.path);
+  const limiter = new RateLimiter(c.env.CACHE);
+  const result = await limiter.check(ip, cls);
 
-  if (count >= MAX_REQUESTS) {
-    increment("rate_limit_rejections_total", { route: c.req.path ?? "/" });
-    c.header("Retry-After", String(WINDOW_SECONDS));
-    throw new RateLimitError(WINDOW_SECONDS);
+  c.header("X-RateLimit-Limit", String(result.limit));
+  c.header("X-RateLimit-Remaining", String(result.remaining));
+  c.header("X-RateLimit-Class", cls);
+  if (result.retryAfterSec > 0) {
+    c.header("Retry-After", String(result.retryAfterSec));
   }
 
-  await c.env.CACHE.put(key, String(count + 1), { expirationTtl: WINDOW_SECONDS });
+  if (!result.allowed) {
+    increment("rate_limit_rejections_total", { route: c.req.path ?? "/", class: cls });
+    log("warn", "rate_limit_exceeded", { ip, class: cls, route: c.req.path });
+    throw new RateLimitError(result.retryAfterSec);
+  }
+
   await next();
 };
 

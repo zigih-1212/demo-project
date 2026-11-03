@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import type { AuthUser } from "../types";
 import { api } from "../services/api";
 
@@ -7,6 +8,7 @@ interface AuthContextType {
   token: string | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  register: (email: string, name: string, password: string) => Promise<void>;
   logout: () => void;
   isAuthenticated: boolean;
 }
@@ -34,11 +36,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string) => {
-    const res = await api.login(email, password);
-    localStorage.setItem("pulse_token", res.token);
-    localStorage.setItem("pulse_user", JSON.stringify(res.user));
-    setToken(res.token);
-    setUser(res.user);
+    const res = await api.login({ email, password });
+    persistSession(res);
+  };
+
+  const register = async (email: string, name: string, password: string) => {
+    // Бэкенд возвращает токен сразу (201) — регистрация открывает сессию
+    const res = await api.register({ email, name, password });
+    persistSession(res);
   };
 
   const logout = () => {
@@ -50,11 +55,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, token, isLoading, login, logout, isAuthenticated: !!token }}
+      value={{ user, token, isLoading, login, register, logout, isAuthenticated: !!token }}
     >
       {children}
     </AuthContext.Provider>
   );
+}
+
+function persistSession(res: { token: string; user: AuthUser }) {
+  localStorage.setItem("pulse_token", res.token);
+  localStorage.setItem("pulse_user", JSON.stringify(res.user));
 }
 
 export const useAuth = () => {

@@ -52,15 +52,13 @@ describe("parseCreateTask", () => {
 });
 
 describe("parseUpdateTask", () => {
-  const current = { status: "todo" as const, priority: "medium" as const };
-
   it("принимает частичное обновление", () => {
-    const patch = parseUpdateTask({ status: "done" }, current);
+    const patch = parseUpdateTask({ status: "done" });
     expect(patch.status).toBe("done");
     expect(patch.title).toBeUndefined();
   });
 
   it("отклоняет невалидный статус", () => {
-    expect(() => parseUpdateTask({ status: "archived" }, current)).toThrow(ValidationError);
+    expect(() => parseUpdateTask({ status: "archived" })).toThrow(ValidationError);
   });
 });

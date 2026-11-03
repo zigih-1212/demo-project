@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import LoginForm from "../components/LoginForm";
@@ -10,16 +10,18 @@ vi.mock("../contexts/AuthContext", () => ({
 
 import { useAuth } from "../contexts/AuthContext";
 
-const mockUseAuth = useAuth as ReturnType<typeof vi.fn>;
+const mockUseAuth = useAuth as unknown as ReturnType<typeof vi.fn>;
 
 describe("LoginForm", () => {
   const mockLogin = vi.fn();
+  const mockRegister = vi.fn();
   const mockOnSuccess = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseAuth.mockReturnValue({
       login: mockLogin,
+      register: mockRegister,
       user: null,
       token: null,
       isLoading: false,
@@ -53,9 +55,9 @@ describe("LoginForm", () => {
     const passwordInputs = screen.getAllByPlaceholderText(/••••••••/);
     const submitButtons = screen.getAllByRole("button", { name: /Войти/ });
 
-    await user.type(emailInputs[0], "admin@pulse.dev");
-    await user.type(passwordInputs[0], "demo1234");
-    await user.click(submitButtons[0]);
+    await user.type(emailInputs[0]!, "admin@pulse.dev");
+    await user.type(passwordInputs[0]!, "demo1234");
+    await user.click(submitButtons[0]!);
 
     expect(mockLogin).toHaveBeenCalledWith("admin@pulse.dev", "demo1234");
   });

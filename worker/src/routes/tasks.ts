@@ -2,10 +2,12 @@ import { Hono } from "hono";
 import { ValidationError, NotFoundError } from "../lib/errors";
 import { optionalAuth, requireAuth, currentUser } from "../middleware/auth";
 import { TaskRepository } from "../repositories/taskRepository";
+import { SyncRepository } from "../repositories/syncRepository";
 import { TaskService } from "../services/taskService";
 import { CacheService } from "../lib/cache";
 import { ActivityRepository } from "../repositories/activityRepository";
 import { parseCreateTask, parseListQuery, parseUpdateTask } from "../lib/validate";
+import { parseJsonBody } from "../lib/http";
 import type { Env } from "../types";
 
 function buildService(c: { env: Env }): TaskService {
@@ -14,7 +16,19 @@ function buildService(c: { env: Env }): TaskService {
     new CacheService(c.env.CACHE),
     c.env.QUEUE,
     new ActivityRepository(c.env.DB),
+    new SyncRepository(c.env.DB),
   );
+}
+
+/** Хэш параметров запроса — часть ETag, чтобы разные фильтры не конфликтовали. */
+function hashQuery(query: unknown): string {
+  const input = JSON.stringify(query);
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
 }
 
 export function taskRoutes(): Hono<{ Bindings: Env }> {
@@ -24,7 +38,26 @@ export function taskRoutes(): Hono<{ Bindings: Env }> {
 
   routes.get("/", async (c) => {
     const query = parseListQuery(new URL(c.req.url).searchParams);
-    return c.json(await buildService(c).list(query));
+    const version = await new SyncRepository(c.env.DB).getVersion("tasks_version");
+    const etag = `"${version}-${hashQuery(query)}"`;
+
+    // Условный GET по RFC 7232: If-None-Match может быть списком и «*»,
+    // а прокси/края ослабляют ETag (W/...) — нормализуем обе стороны.
+    const ifNoneMatch = c.req.header("if-none-match");
+    const notModified =
+      ifNoneMatch !== undefined &&
+      ifNoneMatch
+        .split(",")
+        .some((tag) => tag.trim() === "*" || tag.trim().replace(/^W\//, "") === etag);
+
+    if (notModified) {
+      return new Response(null, { status: 304, headers: { ETag: etag } });
+    }
+
+    const data = await buildService(c).list(query);
+    c.header("ETag", etag);
+    c.header("Cache-Control", "no-store");
+    return c.json(data);
   });
 
   routes.get("/:id", async (c) => {
@@ -35,15 +68,10 @@ export function taskRoutes(): Hono<{ Bindings: Env }> {
     "/",
     requireAuth,
     async (c) => {
-      let body: unknown;
-      try {
-        body = await c.req.json();
-      } catch {
-        throw new ValidationError("Тело запроса должно быть корректным JSON");
-      }
+      const payload = await parseJsonBody(c);
       const actor = currentUser(c);
       if (!actor) throw new ValidationError("Требуется авторизация");
-      const task = await buildService(c).create(parseCreateTask(body), actor);
+      const task = await buildService(c).create(parseCreateTask(payload), actor);
       return c.json(task, 201);
     },
   );
@@ -52,17 +80,12 @@ export function taskRoutes(): Hono<{ Bindings: Env }> {
     "/:id",
     requireAuth,
     async (c) => {
-      let body: unknown;
-      try {
-        body = await c.req.json();
-      } catch {
-        throw new ValidationError("Тело запроса должно быть корректным JSON");
-      }
+      const payload = await parseJsonBody(c);
       const actor = currentUser(c);
       if (!actor) throw new ValidationError("Требуется авторизация");
       const task = await buildService(c).update(
         c.req.param("id"),
-        parseUpdateTask(body),
+        parseUpdateTask(payload),
         actor,
       );
       return c.json(task);

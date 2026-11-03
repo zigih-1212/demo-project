@@ -9,3 +9,7 @@ node_modules/
 *.log
 .wrangler/
 *.local
+.dev.vars
+frontend/dist/
+worker/tests/.bundle/
+worker/tests/.dbgtmp

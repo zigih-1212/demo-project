@@ -4,6 +4,7 @@ import { AuditService } from "../services/auditService";
 import { CacheService } from "../lib/cache";
 import { TaskRepository } from "../repositories/taskRepository";
 import { increment } from "../lib/metrics";
+import { log } from "../lib/logger";
 import type { Env } from "../types";
 
 export function analyticsRoutes(): Hono<{ Bindings: Env }> {
@@ -27,7 +28,18 @@ export function analyticsRoutes(): Hono<{ Bindings: Env }> {
   routes.post("/audit", async (c) => {
     increment("ai_audit_runs_total", { trigger: "scheduled" });
     const report = await new AuditService(c.env.DB).run();
-    await c.env.QUEUE.send({ type: "audit.run", requestedAt: new Date().toISOString() });
+    // Постановка в очередь — best-effort: отчёт уже сформирован и возвращён
+    // вызывающему; consumer персистит его в audit_runs. Сбой доставки
+    // фиксируется метрикой, но не откатывает успешный ответ (ADR-015).
+    try {
+      await c.env.QUEUE.send({ type: "audit.run", requestedAt: new Date().toISOString() });
+    } catch (error) {
+      increment("queue_send_errors_total", { job: "audit.run" });
+      log("error", "queue_send_failed", {
+        job: "audit.run",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     return c.json(report);
   });
 

@@ -21,6 +21,9 @@ API — <https://demo-fullstack-backend.dvybornyh332.workers.dev>
 |---|---|
 | Дашборд: KPI, график постановки задач, распределение по приоритету | главная страница |
 | CRUD задач: создание, фильтры, поиск, сортировка, пагинация, смена статуса, удаление | блок «Задачи» |
+| Live-синхронизация списка: SSE-стрим версий + условные GET (ETag/304), fallback-опрос | бейдж «Live» в блоке «Задачи» |
+| Регистрация нового пользователя (сразу открывает сессию) | экран входа → «Нет аккаунта? Регистрация» |
+| Rate limiting: заголовки `X-RateLimit-*`, 429 + `Retry-After` | 15+ быстрых запросов к `/api/v1/auth/login` |
 | **Аудит ИИ-агента** с находками и планом рефакторинга | блок «Аудит ИИ-агента» → «Запустить» |
 | Лента активности: кто, что, когда сделал | блок «Активность» |
 | Управление пользователями и ролями | блок «Пользователи» |
@@ -32,11 +35,11 @@ API — <https://demo-fullstack-backend.dvybornyh332.workers.dev>
 | Требование | Как реализовано |
 |---|---|
 | Python, Full-stack 3+ лет | `backend/` — FastAPI 3.12, async SQLAlchemy 2.0, Celery; фронтенд — React + TypeScript |
-| Проектирование архитектуры, выбор БД | PostgreSQL 16 + Redis; решения зафиксированы в [ARCHITECTURE.md](ARCHITECTURE.md) (ADR-001…010) |
+| Проектирование архитектуры, выбор БД | PostgreSQL 16 + Redis; решения зафиксированы в [ARCHITECTURE.md](ARCHITECTURE.md) (ADR-001…015) |
 | Брокеры сообщений | Celery + Redis broker, Beat; в edge-варианте — Cloudflare Queues |
 | Стратегии кэширования | read-through кэш (Redis / KV), инвалидация по записи, TTL 60 с, версионирование namespace |
 | Оптимизация запросов и производительность | индексы под фильтры, пагинация, агрегаты в БД, кэш, гистограмма латентности |
-| CI/CD | GitHub Actions: lint → unit-тесты → lint → сборка образа → CodeQL → deploy со smoke-тестом |
+| CI/CD | GitHub Actions: typecheck → unit+integration тесты → сборка; отдельные джобы frontend/backend/docker/security |
 | Мониторинг и логи (Grafana, Prometheus) | `/metrics` в формате Prometheus со счётчиками, персистентными в D1 (ADR-010), дашборд Grafana, правила алертов SLO |
 | Docker | multi-stage Dockerfile, non-root, healthcheck, `docker-compose.yml` на 8 сервисов |
 | Kubernetes | Deployment (probes, resources, securityContext), Service, HPA, PDB, Ingress, отдельный worker |
@@ -60,8 +63,8 @@ demo-project/
 │   │   ├── middleware/       # request id, логирование, ошибки, rate limit, auth
 │   │   ├── lib/              # кэш, метрики, логи, валидация, ошибки, auth (JWT)
 │   │   ├── db/               # схема и сид
-│   │   ├── migrations/       # миграции D1 (0001-0003)
-│   │   └── tests/            # 4 unit-теста (vitest)
+│   │   ├── migrations/       # миграции D1 (0001-0004)
+│   │   └── tests/            # 24 unit + 24 integration (Miniflare: D1+KV in-memory)
 ├── backend/                  # Python backend (FastAPI + PostgreSQL + Celery) — эталон
 │   ├── app/{core,db,services}
 │   ├── alembic/              # миграции PostgreSQL (0001_initial)
@@ -69,12 +72,12 @@ demo-project/
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── web/                      # React + TypeScript фронтенд (Vite)
-│   ├── src/{components,contexts,services}
+│   ├── src/{components,contexts,hooks,services}
 │   ├── src/{types,App.tsx,main.tsx,index.css}
-│   ├── tests/                # 16 unit-тестов (vitest + React Testing Library)
+│   ├── src/components/*.test.tsx  # 9 unit-тестов (vitest + React Testing Library)
 │   ├── vitest.config.ts
 │   └── package.json
-├── frontend/dist/            # собранная статика для Cloudflare Pages
+├── frontend/dist/            # сборка Pages (gitignored); деплой — deploy_frontend.py
 ├── infra/
 │   ├── prometheus/           # конфиг + правила алертов SLO
 │   └── grafana/              # provisioning + дашборд SLO
@@ -122,9 +125,13 @@ pytest -q
 
 # Фронтенд (React + TypeScript)
 cd ../web
-npm install
+npm install --legacy-peer-deps
 npm run typecheck
 npm test
+
+# Интеграционные тесты воркера (Miniflare: D1 + KV in-memory)
+cd ../worker
+npx vitest run tests/integration.test.ts
 ```
 
 ## Деплой
@@ -138,6 +145,16 @@ CLOUDFLARE_ACCOUNT_ID — GitHub Actions secret
 
 `cd.yml` применяет миграции D1, деплоит Worker и Pages, затем прогоняет smoke-тест
 (`/health` и выборка задач). Токены в репозитории не хранятся — `.env` в `.gitignore`.
+
+## Секреты и конфигурация
+
+- `JWT_SECRET` — только через `wrangler secret put JWT_SECRET` (хранится зашифрованным
+  в Cloudflare, не попадает в git и не виден plaintext в dashboard). См. ADR-011.
+  Ротация: повторный `secret put` — инвалидирует выданные токены, пользователи
+  перелогиниваются.
+- `FRONTEND_ORIGIN` — allowlist CORS-origin фронтенда (ADR-012), comma-separated.
+- Локальный запуск воркера: `.dev.vars` в `worker/` (gitignored) с `JWT_SECRET`.
+- Шаблон переменных: `.env.example` в корне репозитория.
 
 ## Почему стек в живом демо отличается от описанного в вакансии
 

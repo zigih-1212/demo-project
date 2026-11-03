@@ -1,8 +1,11 @@
 import { CacheService } from "../lib/cache";
 import { ForbiddenError, NotFoundError } from "../lib/errors";
+import { log } from "../lib/logger";
 import { increment, observe } from "../lib/metrics";
 import { ActivityRepository } from "../repositories/activityRepository";
+import { SyncRepository } from "../repositories/syncRepository";
 import { TaskRepository, type CreateTaskInput, type UpdateTaskInput } from "../repositories/taskRepository";
+import type { CreateTaskPayload } from "../lib/validate";
 import type { AuthUser, ListTasksQuery, Paginated, Task } from "../types";
 
 const LIST_CACHE_TTL = 60;
@@ -19,6 +22,7 @@ export class TaskService {
     private readonly cache: CacheService,
     private readonly queue: Queue,
     private readonly activity: ActivityRepository,
+    private readonly sync: SyncRepository,
   ) {}
 
   async list(query: ListTasksQuery): Promise<Paginated<Task>> {
@@ -55,12 +59,24 @@ export class TaskService {
     return task;
   }
 
-  async create(input: CreateTaskInput, actor: AuthUser): Promise<Task> {
+  async create(input: CreateTaskPayload, actor: AuthUser): Promise<Task> {
     const task = await this.repository.create({ ...input, createdBy: actor.id });
 
     await this.invalidate();
+    await this.sync.bumpVersion("tasks_version");
     increment("tasks_created_total", { priority: task.priority });
-    await this.queue.send({ type: "task.reindex", taskId: task.id, requestedAt: new Date().toISOString() });
+    // Reindex — best-effort фоновая работа: кэш уже сброшен синхронно,
+    // поэтому сбой постановки в очередь не должен откатывать успешную
+    // мутацию. Ошибка фиксируется метрикой и логом (см. ADR-015).
+    try {
+      await this.queue.send({ type: "task.reindex", taskId: task.id, requestedAt: new Date().toISOString() });
+    } catch (error) {
+      increment("queue_send_errors_total", { job: "task.reindex" });
+      log("error", "queue_send_failed", {
+        job: "task.reindex",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     await this.activity.record({
       taskId: task.id,
       actorId: actor.id,
@@ -80,6 +96,7 @@ export class TaskService {
     if (!task) throw new NotFoundError("Task");
 
     await this.invalidate();
+    await this.sync.bumpVersion("tasks_version");
     increment("tasks_updated_total", { status: task.status });
 
     const statusChanged = patch.status !== undefined && patch.status !== current.status;
@@ -104,6 +121,7 @@ export class TaskService {
     if (!deleted) throw new NotFoundError("Task");
 
     await this.invalidate();
+    await this.sync.bumpVersion("tasks_version");
     increment("tasks_deleted_total", {});
     await this.activity.record({
       taskId: null,

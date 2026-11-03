@@ -36,13 +36,43 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests
-        run: npm run test
+        run: npx vitest run src
+
+      - name: Integration tests (Miniflare D1 + KV + workerd)
+        run: npx vitest run tests/integration.test.ts
 
       - name: D1 migrations (local)
         run: npx wrangler d1 migrations apply demo-fullstack-db --local
 
       - name: Build
         run: npx wrangler deploy --dry-run --outdir dist
+
+  frontend:
+    name: Frontend (React + TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test -- --run
+
+      - name: Build
+        run: npm run build
 
   backend:
     name: Backend (Python)
